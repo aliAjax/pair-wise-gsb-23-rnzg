@@ -1,82 +1,94 @@
+import { useEffect, useMemo, useReducer, useState } from "react";
 import "./styles.css";
+import { loadState, reducer, saveState } from "./data/store";
+import {
+  BUFFER_LIMIT,
+  MIN_CORRIDOR_PRESSURE,
+  carriedInto,
+  evaluateConflicts,
+} from "./domain/rules";
+import type { Role, ShiftId } from "./domain/types";
+import { ConflictBoard } from "./ui/ConflictBoard";
+import { RoomRegistry } from "./ui/RoomRegistry";
+import { PassageFlow } from "./ui/PassageFlow";
 
 const project = {
-  "id": "hxwl-09",
-  "port": 5109,
-  "title": "半导体洁净室巡检",
-  "subtitle": "洁净等级阈值、粒子计数与异常处理看板",
-  "stack": "React + Vite + TypeScript + CSS",
-  "theme": [
-    "#0f766e",
-    "#2563eb",
-    "#e11d48"
-  ],
-  "domain": "洁净室巡检",
-  "users": [
-    "巡检员",
-    "厂务工程师",
-    "班组长"
-  ],
-  "metrics": [
-    "粒子异常",
-    "压差异常",
-    "温湿度偏移",
-    "待处理"
-  ],
-  "filters": [
-    "ISO 5",
-    "ISO 6",
-    "ISO 7",
-    "黄光区"
-  ],
-  "fields": [
-    "房间编号",
-    "洁净等级",
-    "粒子计数",
-    "温湿度",
-    "压差",
-    "设备状态",
-    "处理备注"
-  ],
-  "records": [
-    [
-      "CR-1201",
-      "ISO 5",
-      "异常",
-      "0.5um粒子超限，已通知厂务"
-    ],
-    [
-      "CR-2107",
-      "ISO 6",
-      "稳定",
-      "压差15Pa，温湿度正常"
-    ],
-    [
-      "Y-0302",
-      "黄光区",
-      "关注",
-      "湿度接近上限"
-    ]
-  ]
+  id: "hxwl-09",
+  port: 5109,
+  title: "半导体洁净室巡检",
+  subtitle: "压差梯度判定、缓冲间通行闭环与跨班顺延复核看板",
+  stack: "React + Vite + TypeScript + CSS",
 };
 
-const statusColors = ["status-ok", "status-watch", "status-danger"];
+const ROLES: Role[] = ["巡检员", "厂务工程师", "班组长"];
+const SHIFTS: ShiftId[] = ["白班", "夜班"];
+const ISO_FILTERS = ["ISO 5", "ISO 6", "ISO 7", "黄光区"];
 
-function MetricCard({ label, value, index }: { label: string; value: string; index: number }) {
+const statusTones = ["tone-ok", "tone-r1", "tone-r2", "tone-r3"];
+
+function MetricCard({
+  label,
+  value,
+  unit,
+  index,
+}: {
+  label: string;
+  value: number;
+  unit: string;
+  index: number;
+}) {
   return (
     <article className="metric-card">
       <span>{label}</span>
-      <strong>{value}</strong>
-      <i className={statusColors[index % statusColors.length]} />
+      <strong>
+        {value}
+        <small>{unit}</small>
+      </strong>
+      <i className={statusTones[index % statusTones.length]} />
     </article>
   );
 }
 
 function App() {
-  const values = project.metrics.map((metric: string, index: number) => {
-    const base = [84, 12, 31, 7][index % 4];
-    return String(base + index * 3);
-  });
+  const [state, dispatch] = useReducer(reducer, undefined, loadState);
+  const [notice, setNotice] = useState<string | null>(null);
+
+  useEffect(() => {
+    saveState(state);
+  }, [state]);
+
+  useEffect(() => {
+    if (!notice) return;
+    const timer = window.setTimeout(() => setNotice(null), 4200);
+    return () => window.clearTimeout(timer);
+  }, [notice]);
+
+  const conflicts = useMemo(() => evaluateConflicts(state), [state]);
+  const pending = state.requests.filter((item) => item.status === "待复核");
+  const carriedCount = pending.filter((item) => carriedInto(item, state.currentShift)).length;
+
+  const metrics = [
+    {
+      label: `走廊压差 < ${MIN_CORRIDOR_PRESSURE} Pa`,
+      value: conflicts.filter((c) => c.rule === "R1").length,
+      unit: "间",
+    },
+    {
+      label: "梯度方向倒置",
+      value: conflicts.filter((c) => c.rule === "R2").length,
+      unit: "间",
+    },
+    {
+      label: `缓冲间达 ${BUFFER_LIMIT} 人`,
+      value: conflicts.filter((c) => c.rule === "R3").length,
+      unit: "间",
+    },
+    {
+      label: "待复核（含跨班顺延）",
+      value: pending.length,
+      unit: carriedCount > 0 ? `件 · ${carriedCount} 件顺延` : "件",
+    },
+  ];
 
   return (
     <main className="app-shell">
@@ -87,72 +99,101 @@ function App() {
           <p className="subtitle">{project.subtitle}</p>
         </div>
         <div className="stack-card">
-          <span>技术栈</span>
+          <span>技术栈 / 分层</span>
           <strong>{project.stack}</strong>
+          <p>数据（data）· 判定（domain）· 页面（ui）</p>
         </div>
       </section>
 
+      {notice && (
+        <div className="notice-bar" role="status">
+          {notice}
+        </div>
+      )}
+
       <section className="metrics-grid">
-        {project.metrics.map((metric: string, index: number) => (
-          <MetricCard key={metric} label={metric} value={values[index]} index={index} />
+        {metrics.map((metric, index) => (
+          <MetricCard
+            key={metric.label}
+            label={metric.label}
+            value={metric.value}
+            unit={metric.unit}
+            index={index}
+          />
         ))}
       </section>
 
       <section className="workspace">
         <aside className="panel narrow">
-          <h2>角色</h2>
+          <h2>当前班次</h2>
           <div className="chips">
-            {project.users.map((user: string) => (
-              <span key={user}>{user}</span>
+            {SHIFTS.map((shift) => (
+              <button
+                key={shift}
+                className={state.currentShift === shift ? "chip-active" : ""}
+                onClick={() => {
+                  if (shift !== state.currentShift) {
+                    dispatch({ type: "switchShift", toShift: shift });
+                    setNotice(`已切换到${shift}：未复核申请自动顺延并记录`);
+                  }
+                }}
+              >
+                {shift}
+              </button>
             ))}
           </div>
-          <h2>筛选</h2>
+
+          <h2>当前角色</h2>
+          <div className="chips">
+            {ROLES.map((role) => (
+              <button
+                key={role}
+                className={state.currentRole === role ? "chip-active" : ""}
+                onClick={() => dispatch({ type: "setRole", role })}
+              >
+                {role}
+              </button>
+            ))}
+          </div>
+
+          <h2>房间筛选</h2>
           <div className="chips muted">
-            {project.filters.map((filter: string) => (
-              <button key={filter}>{filter}</button>
+            {ISO_FILTERS.map((filter) => (
+              <button key={filter} disabled>
+                {filter}
+              </button>
             ))}
           </div>
+
+          <h2>规则口径</h2>
+          <ul className="rule-list">
+            <li>R1 走廊压差低于 {MIN_CORRIDOR_PRESSURE} Pa → 待复核</li>
+            <li>R2 相邻房间压差方向倒置 → 待复核</li>
+            <li>R3 缓冲间在室达到 {BUFFER_LIMIT} 人 → 待复核</li>
+            <li>放行后冻结读数与人数，补录生成带原因新版本</li>
+            <li>跨班未复核自动顺延到下一班</li>
+          </ul>
+
+          <button
+            className="reset-button"
+            onClick={() => {
+              if (window.confirm("恢复为种子演示数据？当前变更将被清除。")) {
+                dispatch({ type: "resetSeed" });
+                setNotice("已恢复演示数据");
+              }
+            }}
+          >
+            恢复演示数据
+          </button>
         </aside>
 
-        <section className="panel">
-          <div className="section-heading">
-            <div>
-              <p>{project.domain}</p>
-              <h2>记录字段</h2>
-            </div>
-            <button className="primary-action">新增记录</button>
-          </div>
-          <div className="field-grid">
-            {project.fields.map((field: string) => (
-              <label key={field}>
-                <span>{field}</span>
-                <input placeholder={"填写" + field} />
-              </label>
-            ))}
-          </div>
-        </section>
+        <div className="main-column">
+          <RoomRegistry state={state} dispatch={dispatch} />
+        </div>
       </section>
 
-      <section className="records panel">
-        <div className="section-heading">
-          <div>
-            <p>示例数据</p>
-            <h2>近期记录</h2>
-          </div>
-          <button>导出摘要</button>
-        </div>
-        <div className="record-list">
-          {project.records.map((record: string[], index: number) => (
-            <article key={record.join("-")} className="record-card">
-              <div className="record-index">{String(index + 1).padStart(2, "0")}</div>
-              <div>
-                <h3>{record[0]}</h3>
-                <p>{record.slice(1).join(" · ")}</p>
-              </div>
-            </article>
-          ))}
-        </div>
-      </section>
+      <ConflictBoard conflicts={conflicts} />
+      <PassageFlow state={state} dispatch={dispatch} onNotice={setNotice} />
     </main>
   );
 }
